@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Global Earthquakes & Japan Counties</title>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet">
+  <style>
+    :root { --panel-w: 380px; --gap: 12px; }
+    html, body { height: 100%; margin: 0; }
+    #map { position: fixed; inset: 0; }
+    #panel { position: fixed; top: var(--gap); right: var(--gap); width: var(--panel-w);
+             max-height: calc(100vh - 2*var(--gap)); overflow: auto; padding: 16px;
+             background: rgba(255,255,255,.92); color: #111; border-radius: 16px;
+             box-shadow: 0 10px 30px rgba(0,0,0,.2); backdrop-filter: blur(6px); }
+    #panel h1 { margin: 0 0 6px 0; font-size: 1.05rem; }
+    .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .table th, .table td { padding: 6px 8px; border-bottom: 1px solid #e6e6e6; text-align: left; }
+    .table th { cursor: pointer; user-select: none; position: sticky; top: 0; background: rgba(255,255,255,.95); }
+    .legend { display:flex; gap:6px; align-items:center; margin:8px 0 12px; }
+    .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    @media (max-width: 1024px){ #panel { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <aside id="panel">
+    <h1>Global Earthquakes <span style="font-size:.8rem;opacity:.7">(sortable by magnitude)</span></h1>
+    <div class="legend">
+      <span class="dot" style="background:#2DC4B2"></span><small>M ≤ 2</small>
+      <span class="dot" style="background:#3BB3C3"></span><small>2–4</small>
+      <span class="dot" style="background:#669EC4"></span><small>4–6</small>
+      <span class="dot" style="background:#8B88B6"></span><small>6–7</small>
+      <span class="dot" style="background:#A2719B"></span><small>≥ 7</small>
+    </div>
+    <table class="table" id="eqTable">
+      <thead>
+        <tr>
+          <th data-key="mag" data-type="number">Magnitude ▲▼</th>
+          <th data-key="place">Place</th>
+          <th data-key="time" data-type="date">Time</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </aside>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
+  <script>
+    mapboxgl.accessToken = 'YOUR_MAPBOX_ACCESS_TOKEN';
+
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/light-v11', // different from index.html
+      center: [139.6917, 35.6895],
+      zoom: 3
+    });
+    map.addControl(new mapboxgl.NavigationControl(), 'top-left');
+    map.addControl(new mapboxgl.ScaleControl());
+
+    Promise.all([
+      fetch('assets/earthquakes.geojson').then(r => r.json()),
+      fetch('assets/japan.json').then(r => r.json())
+    ]).then(([eq, jp]) => {
+      map.on('load', () => {
+        // Japan boundaries
+        map.addSource('japan', { type: 'geojson', data: jp });
+        map.addLayer({ id: 'japan-fill', type: 'fill', source: 'japan', paint: { 'fill-color': '#4f46e5', 'fill-opacity': 0.08 }});
+        map.addLayer({ id: 'japan-outline', type: 'line', source: 'japan', paint: { 'line-color': '#312e81', 'line-width': 1.25 }});
+
+        // Earthquakes
+        map.addSource('quakes', { type: 'geojson', data: eq });
+        map.addLayer({
+          id: 'quakes-circles', type: 'circle', source: 'quakes',
+          paint: {
+            'circle-radius': ['interpolate', ['linear'], ['get','mag'], 0, 3, 2, 5, 4, 7, 6, 9, 8, 12],
+            'circle-color': ['step', ['get','mag'], '#2DC4B2', 2, '#3BB3C3', 4, '#669EC4', 6, '#8B88B6', 7, '#A2719B'],
+            'circle-opacity': 0.8,
+            'circle-stroke-color': '#fff',
+            'circle-stroke-width': 0.8
+          }
+        });
+
+        map.on('click', 'quakes-circles', (e) => {
+          const f = e.features[0];
+          const { mag, place, time } = f.properties;
+          const t = new Date(Number(time));
+          new mapboxgl.Popup({ offset: 8 })
+            .setLngLat(f.geometry.coordinates.slice(0,2))
+            .setHTML(`<strong>M ${Number(mag).toFixed(1)}</strong><br>${place || ''}<br><small>${t.toLocaleString()}</small>`)
+            .addTo(map);
+        });
+        map.on('mouseenter','quakes-circles', ()=> map.getCanvas().style.cursor='pointer');
+        map.on('mouseleave','quakes-circles', ()=> map.getCanvas().style.cursor='');
+
+        const bounds = combineBounds(geojsonBounds(eq), geojsonBounds(jp));
+        if (bounds) map.fitBounds(bounds, { padding: { top: 20, right: (window.innerWidth>1024? 400: 20), bottom: 20, left: 20 } });
+
+        buildQuakeTable(eq);
+      });
+    }).catch(err => console.error(err));
+
+    function buildQuakeTable(geojson){
+      const tbody = document.querySelector('#eqTable tbody');
+      let rows = geojson.features
+        .filter(f => f.geometry && f.geometry.type === 'Point')
+        .map(f => ({ mag: Number(f.properties.mag), place: f.properties.place || '', time: Number(f.properties.time), coords: f.geometry.coordinates }))
+        .filter(r => !Number.isNaN(r.mag) && !Number.isNaN(r.time));
+      let state = { sortKey: 'mag', dir: 'desc' };
+      render();
+      document.querySelectorAll('#eqTable thead th').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.key;
+          if (state.sortKey === key) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+          else { state.sortKey = key; state.dir = (th.dataset.type === 'number' || th.dataset.type === 'date') ? 'desc' : 'asc'; }
+          render();
+        });
+      });
+      function render(){
+        rows.sort((a,b) => { const k = state.sortKey, dir = state.dir==='asc'?1:-1; if (a[k]<b[k]) return -1*dir; if (a[k]>b[k]) return 1*dir; return 0; });
+        tbody.innerHTML = rows.slice(0, 200).map(r => `
+          <tr data-lon="${r.coords[0]}" data-lat="${r.coords[1]}">
+            <td><strong>${r.mag.toFixed(1)}</strong></td>
+            <td>${r.place}</td>
+            <td>${new Date(r.time).toLocaleString()}</td>
+          </tr>
+        `).join('');
+        tbody.querySelectorAll('tr').forEach(tr => {
+          tr.addEventListener('mouseenter', () => {
+            map.easeTo({ center: [Number(tr.dataset.lon), Number(tr.dataset.lat)], zoom: 5, duration: 800 });
+          });
+        });
+      }
+    }
+
+    function geojsonBounds(gj){
+      if (!gj || !gj.features || !gj.features.length) return null;
+      let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+      for (const f of gj.features) {
+        const coords = (f.geometry.type === 'Point') ? [f.geometry.coordinates]
+          : (f.geometry.type === 'MultiPoint' || f.geometry.type==='LineString') ? f.geometry.coordinates
+          : (f.geometry.type === 'MultiLineString' || f.geometry.type==='Polygon') ? f.geometry.coordinates.flat(1)
+          : (f.geometry.type === 'MultiPolygon') ? f.geometry.coordinates.flat(2) : [];
+        for (const c of coords) {
+          const x=c[0], y=c[1];
+          if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y;
+        }
+      }
+      if (!isFinite(minX)) return null;
+      return [[minX, minY],[maxX, maxY]];
+    }
+    function combineBounds(a,b){
+      if (!a) return b; if (!b) return a;
+      return [[Math.min(a[0][0], b[0][0]), Math.min(a[0][1], b[0][1])],[Math.max(a[1][0], b[1][0]), Math.max(a[1][1], b[1][1])]];
+    }
+  </script>
+</body>
+</html>
