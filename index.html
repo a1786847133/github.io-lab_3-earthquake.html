@@ -1,0 +1,70 @@
+<!doctype html>
+coords: f.geometry.coordinates
+}));
+
+
+let state = { sortKey: 'population', dir: 'desc' };
+render();
+
+
+document.querySelectorAll('#cityTable thead th').forEach(th => {
+th.addEventListener('click', () => {
+const key = th.dataset.key;
+if (state.sortKey === key) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+else {
+state.sortKey = key;
+state.dir = (th.dataset.type === 'number') ? 'desc' : 'asc';
+}
+render();
+});
+});
+
+
+function render(){
+rows.sort((a,b) => {
+const k = state.sortKey; const dir = state.dir === 'asc' ? 1 : -1;
+if (a[k] < b[k]) return -1*dir; if (a[k] > b[k]) return 1*dir; return 0;
+});
+tbody.innerHTML = rows.map(r => `
+<tr data-lon="${r.coords[0]}" data-lat="${r.coords[1]}">
+<td><strong>${r.name}</strong></td>
+<td>${r.population.toLocaleString()}</td>
+<td>${r.prefecture}</td>
+</tr>
+`).join('');
+
+
+// Hover to pan
+tbody.querySelectorAll('tr').forEach(tr => {
+tr.addEventListener('mouseenter', () => {
+map.easeTo({ center: [Number(tr.dataset.lon), Number(tr.dataset.lat)], zoom: 7, duration: 800 });
+});
+});
+}
+}
+
+
+// --- helpers
+function geojsonBounds(gj){
+if (!gj || !gj.features || !gj.features.length) return null;
+let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+for (const f of gj.features) {
+const coords = (f.geometry.type === 'Point') ? [f.geometry.coordinates]
+: (f.geometry.type === 'MultiPoint' || f.geometry.type==='LineString') ? f.geometry.coordinates
+: (f.geometry.type === 'MultiLineString' || f.geometry.type==='Polygon') ? f.geometry.coordinates.flat(1)
+: (f.geometry.type === 'MultiPolygon') ? f.geometry.coordinates.flat(2) : [];
+for (const c of coords) {
+const x=c[0], y=c[1];
+if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y;
+}
+}
+if (!isFinite(minX)) return null;
+return [[minX, minY],[maxX, maxY]];
+}
+function combineBounds(a,b){
+if (!a) return b; if (!b) return a;
+return [[Math.min(a[0][0], b[0][0]), Math.min(a[0][1], b[0][1])],[Math.max(a[1][0], b[1][0]), Math.max(a[1][1], b[1][1])]];
+}
+</script>
+</body>
+</html>
