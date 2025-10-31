@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>My GeoJSON Web Map — Deliverable</title>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet">
+  <style>
+    :root { --panel-w: 380px; --gap: 12px; --bg: rgba(18,18,18,.92); --fg: #f7f7f7; }
+    html, body { height: 100%; margin: 0; }
+    #map { position: fixed; inset: 0; }
+    #panel { position: fixed; top: var(--gap); right: var(--gap); width: var(--panel-w);
+             max-height: calc(100vh - 2*var(--gap)); overflow: auto; padding: 16px;
+             background: var(--bg); color: var(--fg); border-radius: 16px;
+             box-shadow: 0 10px 30px rgba(0,0,0,.4); backdrop-filter: blur(6px); }
+    #panel h1 { margin: 0 0 6px 0; font-size: 1.05rem; }
+    #panel p { margin: 0 0 10px 0; font-size: .9rem; opacity: .85; }
+    .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .table th, .table td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: left; }
+    .table th { cursor: pointer; user-select: none; position: sticky; top: 0; background: rgba(0,0,0,.25); }
+    .chip { display:inline-block; padding:.2rem .45rem; border-radius:.5rem; background:#111; color:#fff; font-weight:600; font-size:.75rem; }
+    .legend { display:flex; gap:6px; align-items:center; margin:8px 0 12px; }
+    .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    @media (max-width: 1024px){ #panel { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <aside id="panel">
+    <h1>City Population Explorer <span class="chip">Demo</span></h1>
+    <p>Points = Cities (click for details). Polygons = Parks. Click a column to sort.</p>
+    <div class="legend">
+      <span class="dot" style="background:#9bd5f5"></span><small>Small</small>
+      <span class="dot" style="background:#37a5e3"></span><small>Medium</small>
+      <span class="dot" style="background:#1670b9"></span><small>Large</small>
+    </div>
+    <table class="table" id="cityTable">
+      <thead>
+        <tr>
+          <th data-key="name">City ▲▼</th>
+          <th data-key="population" data-type="number">Population</th>
+          <th data-key="prefecture">Prefecture</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </aside>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
+  <script>
+    mapboxgl.accessToken = 'YOUR_MAPBOX_ACCESS_TOKEN';
+
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/dark-v11', // DIFFERENT from earthquake.html
+      center: [139.767, 35.681],
+      zoom: 4.5
+    });
+    map.addControl(new mapboxgl.NavigationControl(), 'top-left');
+    map.addControl(new mapboxgl.ScaleControl());
+
+    Promise.all([
+      fetch('assets/cities.geojson').then(r => r.json()), // points
+      fetch('assets/parks.geojson').then(r => r.json())   // polygons
+    ]).then(([cities, parks]) => {
+      map.on('load', () => {
+        // Polygons layer (parks)
+        map.addSource('parks', { type: 'geojson', data: parks });
+        map.addLayer({
+          id: 'parks-fill', type: 'fill', source: 'parks',
+          paint: { 'fill-color': '#22c55e', 'fill-opacity': 0.20 }
+        });
+        map.addLayer({
+          id: 'parks-outline', type: 'line', source: 'parks',
+          paint: { 'line-color': '#16a34a', 'line-width': 1.2 }
+        });
+
+        // Points layer (cities)
+        map.addSource('cities', { type: 'geojson', data: cities });
+        map.addLayer({
+          id: 'cities-circles', type: 'circle', source: 'cities',
+          paint: {
+            'circle-radius': [
+              'interpolate', ['linear'], ['get','population'],
+              0, 3, 300000, 6, 1000000, 8, 5000000, 12
+            ],
+            'circle-color': [
+              'interpolate', ['linear'], ['get','population'],
+              0, '#9bd5f5', 500000, '#37a5e3', 2000000, '#1670b9'
+            ],
+            'circle-opacity': 0.9,
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': 0.8
+          }
+        });
+
+        // Popups for cities
+        map.on('click', 'cities-circles', (e) => {
+          const f = e.features[0];
+          const { name, population, prefecture } = f.properties;
+          new mapboxgl.Popup({ offset: 8 })
+            .setLngLat(f.geometry.coordinates)
+            .setHTML(`<strong>${name}</strong><br>Population: ${Number(population).toLocaleString()}<br><small>${prefecture || ''}</small>`)
+            .addTo(map);
+        });
+        map.on('mouseenter', 'cities-circles', () => map.getCanvas().style.cursor = 'pointer');
+        map.on('mouseleave', 'cities-circles', () => map.getCanvas().style.cursor = '');
+
+        // Fit to combined bounds
+        const bounds = combineBounds(geojsonBounds(cities), geojsonBounds(parks));
+        if (bounds) map.fitBounds(bounds, { padding: { top: 20, right: (window.innerWidth > 1024 ? 400 : 20), bottom: 20, left: 20 } });
+
+        // Build sortable table from city points
+        buildCityTable(cities);
+      });
+    }).catch(err => console.error(err));
+
+    function buildCityTable(geojson){
+      const tbody = document.querySelector('#cityTable tbody');
+      let rows = geojson.features
+        .filter(f => f.geometry && f.geometry.type === 'Point')
+        .map(f => ({
+          name: f.properties.name || '',
+          population: Number(f.properties.population) || 0,
+          prefecture: f.properties.prefecture || '',
+          coords: f.geometry.coordinates
+        }));
+
+      let state = { sortKey: 'population', dir: 'desc' };
+      render();
+
+      document.querySelectorAll('#cityTable thead th').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.key;
+          if (state.sortKey === key) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+          else {
+            state.sortKey = key;
+            state.dir = (th.dataset.type === 'number') ? 'desc' : 'asc';
+          }
+          render();
+        });
+      });
+
+      function render(){
+        rows.sort((a,b) => {
+          const k = state.sortKey; const dir = state.dir === 'asc' ? 1 : -1;
+          if (a[k] < b[k]) return -1*dir; if (a[k] > b[k]) return 1*dir; return 0;
+        });
+        tbody.innerHTML = rows.map(r => `
+          <tr data-lon="${r.coords[0]}" data-lat="${r.coords[1]}">
+            <td><strong>${r.name}</strong></td>
+            <td>${r.population.toLocaleString()}</td>
+            <td>${r.prefecture}</td>
+          </tr>
+        `).join('');
+
+        // Hover to pan
+        tbody.querySelectorAll('tr').forEach(tr => {
+          tr.addEventListener('mouseenter', () => {
+            map.easeTo({ center: [Number(tr.dataset.lon), Number(tr.dataset.lat)], zoom: 7, duration: 800 });
+          });
+        });
+      }
+    }
+
+    // --- helpers
+    function geojsonBounds(gj){
+      if (!gj || !gj.features || !gj.features.length) return null;
+      let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+      for (const f of gj.features) {
+        const coords = (f.geometry.type === 'Point') ? [f.geometry.coordinates]
+          : (f.geometry.type === 'MultiPoint' || f.geometry.type==='LineString') ? f.geometry.coordinates
+          : (f.geometry.type === 'MultiLineString' || f.geometry.type==='Polygon') ? f.geometry.coordinates.flat(1)
+          : (f.geometry.type === 'MultiPolygon') ? f.geometry.coordinates.flat(2) : [];
+        for (const c of coords) {
+          const x=c[0], y=c[1];
+          if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y;
+        }
+      }
+      if (!isFinite(minX)) return null;
+      return [[minX, minY],[maxX, maxY]];
+    }
+    function combineBounds(a,b){
+      if (!a) return b; if (!b) return a;
+      return [[Math.min(a[0][0], b[0][0]), Math.min(a[0][1], b[0][1])],[Math.max(a[1][0], b[1][0]), Math.max(a[1][1], b[1][1])]];
+    }
+  </script>
+</body>
+</html>
